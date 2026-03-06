@@ -1,0 +1,12 @@
+[package]
+name = "tuxinjector-config"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+tuxinjector-core = { workspace = true }
+serde = { workspace = true }
+notify = { workspace = true }
+arc-swap = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }

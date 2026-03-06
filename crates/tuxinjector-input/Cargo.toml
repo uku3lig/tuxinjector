@@ -1,0 +1,11 @@
+[package]
+name = "tuxinjector-input"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+tuxinjector-core = { workspace = true }
+tuxinjector-config = { workspace = true }
+tracing = { workspace = true }
+libc = { workspace = true }
+parking_lot = { workspace = true }

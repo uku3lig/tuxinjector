@@ -1,0 +1,14 @@
+pub mod apps;
+pub mod appearance;
+pub mod cursors;
+pub mod debug;
+pub mod eyezoom;
+pub mod general;
+pub mod hotkeys;
+pub mod images;
+pub mod key_rebinds;
+pub mod mirrors;
+pub mod modes;
+pub mod mouse;
+pub mod plugins;
+pub mod window_overlays;

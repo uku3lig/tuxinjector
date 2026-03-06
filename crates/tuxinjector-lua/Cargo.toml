@@ -1,0 +1,13 @@
+[package]
+name = "tuxinjector-lua"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+tuxinjector-core = { workspace = true }
+tuxinjector-config = { workspace = true }
+mlua = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+crossbeam-channel = { workspace = true }
+tuxinjector-input = { workspace = true }

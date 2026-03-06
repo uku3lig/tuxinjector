@@ -1,0 +1,7 @@
+[package]
+name = "tuxinjector-plugin-api"
+version = "1.0.0"
+edition = "2021"
+description = "Stable C ABI plugin API for tuxinjector"
+
+[dependencies]

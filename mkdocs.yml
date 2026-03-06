@@ -1,0 +1,74 @@
+site_name: Tuxinjector
+site_description: Minecraft speedrunning overlay for Linux - Pure Rust + OpenGL
+docs_dir: docs/tuxinjector/src
+repo_url: https://github.com/flammablebunny/tuxinjector
+repo_name: flammablebunny/tuxinjector
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+    - content.code.annotate
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+  - admonition
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+nav:
+  - Introduction: index.md
+  - Usage: usage.md
+  - Architecture:
+    - Injection & Hooking: injection.md
+    - OpenGL Rendering: rendering.md
+    - Input Interception: input.md
+    - Design Decisions: design-decisions.md
+  - Lua API:
+    - Overview: api/README.md
+    - tx: api/tx.md
+    - tx.bind: api/tx_bind.md
+    - tx.switch_mode: api/tx_switch_mode.md
+    - tx.toggle_mode: api/tx_toggle_mode.md
+    - tx.toggle_gui: api/tx_toggle_gui.md
+    - tx.set_sensitivity: api/tx_set_sensitivity.md
+    - tx.exec: api/tx_exec.md
+    - tx.press_key: api/tx_press_key.md
+    - tx.get_key: api/tx_get_key.md
+    - tx.sleep: api/tx_sleep.md
+    - tx.log: api/tx_log.md
+    - tx.state: api/tx_state.md
+    - tx.get_mode: api/tx_get_mode.md
+    - tx.active_res: api/tx_active_res.md
+    - tx.current_time: api/tx_current_time.md
+    - tx.listen: api/tx_listen.md
+    - tx.toggle_app_visibility: api/tx_toggle_app_visibility.md
+    - Key Names: api/key_names.md

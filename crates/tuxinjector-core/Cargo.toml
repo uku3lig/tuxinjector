@@ -1,0 +1,12 @@
+[package]
+name = "tuxinjector-core"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+arc-swap = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+serde_json = "1"

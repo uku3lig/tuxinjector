@@ -1,0 +1,32 @@
+[package]
+name = "tuxinjector"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+name = "tuxinjector"
+
+[dependencies]
+tuxinjector-core = { workspace = true }
+tuxinjector-config = { workspace = true }
+tuxinjector-render = { workspace = true }
+tuxinjector-gl-interop = { workspace = true }
+tuxinjector-gui = { workspace = true }
+tuxinjector-input = { workspace = true }
+tuxinjector-lua = { workspace = true }
+tuxinjector-plugin-api = { workspace = true }
+libloading = { workspace = true }
+imgui = { workspace = true }
+imgui-glow-renderer = { workspace = true }
+glow = { workspace = true }
+ctor = { workspace = true }
+crossbeam-channel = { workspace = true }
+libc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+x11rb = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+ab_glyph = { workspace = true }
+image = { workspace = true }

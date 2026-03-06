@@ -1,0 +1,16 @@
+[package]
+name = "tuxinjector-capture"
+version = "1.0.0"
+edition = "2021"
+
+[features]
+default = ["pipewire"]
+pipewire = ["dep:pipewire", "dep:dbus"]
+
+[dependencies]
+tuxinjector-core = { workspace = true }
+tracing = { workspace = true }
+
+# PipeWire capture (optional, enabled by default)
+pipewire = { version = "0.8", optional = true }
+dbus = { version = "0.9", optional = true }

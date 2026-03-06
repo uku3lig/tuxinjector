@@ -1,0 +1,70 @@
+[workspace]
+members = [
+    "crates/tuxinjector",
+    "crates/tuxinjector-core",
+    "crates/tuxinjector-config",
+    "crates/tuxinjector-render",
+    "crates/tuxinjector-gl-interop",
+    "crates/tuxinjector-gui",
+    "crates/tuxinjector-input",
+    "crates/tuxinjector-capture",
+    "crates/tuxinjector-lua",
+    "crates/tuxinjector-plugin-api",
+]
+resolver = "2"
+
+[workspace.dependencies]
+# GUI
+imgui = "0.12"
+imgui-glow-renderer = "0.13"
+glow = "0.14"
+
+# Config
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+notify = "7"
+mlua = { version = "0.10", features = ["luajit", "vendored", "serialize"] }
+
+# Concurrency
+arc-swap = "1"
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+
+# HTTP (in-process, avoids SIGCHLD race with JVM when shelling out to curl)
+ureq = { version = "2", features = ["json"] }
+
+# Image loading
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+
+# Font rasterization
+ab_glyph = "0.2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# FFI
+libc = "0.2"
+x11rb = { version = "0.13", features = ["res", "composite"] }
+
+# Init
+ctor = "0.4"
+
+# Plugin loading
+libloading = "0.8"
+
+# Internal crates
+tuxinjector-core = { path = "crates/tuxinjector-core" }
+tuxinjector-config = { path = "crates/tuxinjector-config" }
+tuxinjector-render = { path = "crates/tuxinjector-render" }
+tuxinjector-gl-interop = { path = "crates/tuxinjector-gl-interop" }
+tuxinjector-gui = { path = "crates/tuxinjector-gui" }
+tuxinjector-input = { path = "crates/tuxinjector-input" }
+tuxinjector-capture = { path = "crates/tuxinjector-capture" }
+tuxinjector-lua = { path = "crates/tuxinjector-lua" }
+tuxinjector-plugin-api = { path = "crates/tuxinjector-plugin-api" }
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
+opt-level = 2

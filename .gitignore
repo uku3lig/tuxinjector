@@ -1,0 +1,12 @@
+# Build
+target/
+result
+
+# Nix
+result-*
+.direnv/
+
+# Editor / IDE
+.vscode/
+.idea/
+

@@ -1,0 +1,12 @@
+[package]
+name = "tuxinjector-gui"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+tuxinjector-core = { workspace = true }
+tuxinjector-config = { workspace = true }
+imgui = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+ureq = { workspace = true }

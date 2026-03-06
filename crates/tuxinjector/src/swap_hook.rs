@@ -1,0 +1,846 @@
+// EGL/GLX SwapBuffers hooks -- render overlay then forward to the real swap fn
+
+use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use std::sync::OnceLock;
+
+use crate::gl_resolve;
+use crate::overlay::OverlayState;
+use crate::state;
+
+extern crate libc;
+
+type EglSwapBuffersFn = unsafe extern "C" fn(display: *mut c_void, surface: *mut c_void) -> i32;
+type GlxSwapBuffersFn = unsafe extern "C" fn(display: *mut c_void, drawable: u64);
+
+// RTLD_NEXT pointers (potentially another hook in the chain)
+static REAL_EGL_SWAP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static REAL_GLX_SWAP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+// driver-direct pointers (skip the chain)
+static ORIGINAL_EGL_SWAP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static ORIGINAL_GLX_SWAP: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+
+static FRAME_COUNT: AtomicU64 = AtomicU64::new(0);
+
+// next frame deadline in CLOCK_MONOTONIC ns, 0 = not set yet
+static NEXT_FRAME_NS: AtomicU64 = AtomicU64::new(0);
+
+fn clock_ns() -> u64 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
+}
+
+// Sleep until close to the target, then spin-wait the rest to absorb
+// scheduler jitter. spin_threshold_us controls where sleep stops.
+fn frame_limit(fps: i32, spin_us: i32) {
+    if fps <= 0 {
+        NEXT_FRAME_NS.store(0, Ordering::Relaxed);
+        return;
+    }
+
+    let frame_ns = 1_000_000_000u64 / fps as u64;
+    let spin_ns = spin_us.max(0) as u64 * 1_000;
+    let now = clock_ns();
+
+    let target = {
+        let stored = NEXT_FRAME_NS.load(Ordering::Relaxed);
+        if stored == 0 {
+            // first frame, just set next target and go
+            NEXT_FRAME_NS.store(now + frame_ns, Ordering::Relaxed);
+            return;
+        }
+        stored
+    };
+
+    if target > now {
+        let remaining = target - now;
+
+        if remaining > spin_ns {
+            let sleep_until = target - spin_ns;
+            let ts = libc::timespec {
+                tv_sec:  (sleep_until / 1_000_000_000) as libc::time_t,
+                tv_nsec: (sleep_until % 1_000_000_000) as libc::c_long,
+            };
+            unsafe {
+                libc::clock_nanosleep(
+                    libc::CLOCK_MONOTONIC,
+                    libc::TIMER_ABSTIME,
+                    &ts,
+                    std::ptr::null_mut(),
+                );
+            }
+        }
+
+        // spin the last few us to absorb jitter
+        while clock_ns() < target {
+            std::hint::spin_loop();
+        }
+    }
+
+    // advance target; resync if we've fallen behind by more than a frame
+    let now2 = clock_ns();
+    let next = if now2 > target + frame_ns {
+        now2 + frame_ns // fell behind, resync
+    } else {
+        target + frame_ns
+    };
+    NEXT_FRAME_NS.store(next, Ordering::Relaxed);
+}
+
+// when the GUI is open, don't let the framerate drop below this
+// or the UI feels awful
+const OVERLAY_MIN_FPS: i32 = 30;
+
+fn effective_fps(configured: i32) -> i32 {
+    if configured > 0 && configured < OVERLAY_MIN_FPS && tuxinjector_input::gui_is_visible() {
+        OVERLAY_MIN_FPS
+    } else {
+        configured
+    }
+}
+
+const LOG_INTERVAL: u64 = 300; // ~5s at 60fps
+
+static INITIALIZED: AtomicBool = AtomicBool::new(false);
+static INIT_FAILED: AtomicBool = AtomicBool::new(false);
+static INIT_ONCE: OnceLock<()> = OnceLock::new();
+
+// One-time deferred init: resolve GL, create overlay, load plugins.
+// Runs on the first SwapBuffers call because we need a GL context.
+fn first_frame_init() {
+    INIT_ONCE.get_or_init(|| {
+        tracing::info!("tuxinjector: first frame -- running deferred init");
+
+        let gpa = gl_resolve::get_proc_address_fn();
+        if gpa.is_none() {
+            tracing::error!("tuxinjector: neither eglGetProcAddress nor glXGetProcAddressARB available -- can't init");
+            INIT_FAILED.store(true, Ordering::Release);
+            return;
+        }
+        let gpa = gpa.unwrap();
+
+        let gl = unsafe { crate::gl_resolve::GlFunctions::resolve(gpa) };
+        let tx = state::init_or_get();
+        let _ = tx.gl.set(gl);
+
+        let config = std::sync::Arc::clone(&tx.config);
+        match unsafe { OverlayState::new(gpa, config) } {
+            Ok(overlay) => {
+                let _ = tx.overlay.set(std::sync::Mutex::new(overlay));
+                INITIALIZED.store(true, Ordering::Release);
+                tracing::info!("tuxinjector: overlay ready");
+
+                // show onboarding toast if this is the first time
+                let onboarded = state::get()
+                    .config_dir.get()
+                    .map(|d| d.join(".onboarded").exists())
+                    .unwrap_or(false);
+                if !onboarded {
+                    tuxinjector_gui::toast::push(
+                        "Tuxinjector active - press Ctrl+I to open configuration settings",
+                    );
+                }
+
+                let ps = crate::perf_stats::PerfStats::new();
+                let _ = tx.perf_stats.set(ps);
+
+                // discover and load plugins from ~/.local/share/tuxinjector/plugins/
+                let saved = crate::plugin_loader::load_plugin_settings();
+                let loaded = crate::plugin_loader::discover_and_load(&saved);
+                let registry = crate::plugin_registry::PluginRegistry::new(loaded, saved);
+                let _ = tx.plugins.set(std::sync::Mutex::new(registry));
+            }
+            Err(e) => {
+                tracing::error!("tuxinjector: overlay init failed: {e}");
+                INIT_FAILED.store(true, Ordering::Release);
+            }
+        }
+
+        let input_cfg = std::sync::Arc::clone(&tx.config);
+        let mut handler = crate::input_handler::TuxinjectorInputHandler::new(input_cfg);
+
+        if let Some(bindings) = tx.lua_bindings.lock().unwrap().take() {
+            tracing::info!(count = bindings.len(), "registering Lua actions with hotkey engine");
+            handler.register_lua_actions(&bindings);
+        }
+
+        if let Some(runtime) = tx.lua_runtime.get() {
+            handler.set_lua_callback_channel(runtime.callback_tx.clone());
+            tracing::info!("tuxinjector: Lua callback channel wired up");
+        } else {
+            tracing::warn!("tuxinjector: no Lua runtime -- hotkey callbacks will be dropped");
+        }
+
+        tuxinjector_input::register_input_handler(Box::new(handler));
+        tracing::info!("tuxinjector: input handler registered");
+
+        // patch Mesa GL calls in-place so LWJGL3 under RTLD_DEEPBIND hits our hooks
+        unsafe {
+            crate::viewport_hook::install_glviewport_inline_hook();
+            crate::viewport_hook::install_glbindframebuffer_inline_hook();
+        };
+    });
+}
+
+// grab the physical surface size from GL_VIEWPORT when no mode resize is active
+unsafe fn capture_original_size() {
+    let (mw, _) = crate::viewport_hook::get_mode_size();
+    if mw > 0 { return; }
+
+    let tx = state::get();
+    if let Some(gl) = tx.gl.get() {
+        let mut vp = [0i32; 4];
+        (gl.get_integer_v)(0x0BA2 /* GL_VIEWPORT */, vp.as_mut_ptr());
+        let w = vp[2] as u32;
+        let h = vp[3] as u32;
+        if w > 0 && h > 0 {
+            crate::viewport_hook::force_store_original_size(w, h);
+        }
+    }
+}
+
+// --- child process tracking for tx.exec() ---
+
+static EXEC_CHILDREN: std::sync::Mutex<Vec<(std::process::Child, String)>> =
+    std::sync::Mutex::new(Vec::new());
+
+// reap finished child processes so we don't leak zombies
+fn reap_children() {
+    let mut guard = match EXEC_CHILDREN.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+
+    guard.retain_mut(|(child, name)| {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let pid = child.id();
+                tracing::info!(pid, name = %name, ?status, "exec: child exited");
+                tuxinjector_gui::running_apps::unregister(pid);
+                false
+            }
+            Ok(None) => true,
+            Err(e) => {
+                tracing::warn!(name = %name, %e, "exec: try_wait error");
+                true
+            }
+        }
+    });
+}
+
+// dispatch pending commands from the Lua runtime (called each frame)
+fn process_lua_commands() {
+    reap_children();
+    let tx = state::get();
+    let runtime = match tx.lua_runtime.get() {
+        Some(r) => r,
+        None => return,
+    };
+
+    let cmds = runtime.drain_commands();
+    if cmds.is_empty() { return; }
+
+    for cmd in cmds {
+        match cmd {
+            tuxinjector_lua::TuxinjectorCommand::SwitchMode(name) => {
+                tracing::debug!(mode = %name, "Lua: switch_mode");
+                if let Some(lock) = tx.overlay.get() {
+                    if let Ok(mut overlay) = lock.lock() {
+                        overlay.switch_mode(&name);
+                    }
+                }
+                tuxinjector_lua::update_mode_name(&name);
+                apply_mode_sensitivity(&name, &tx.config);
+            }
+            tuxinjector_lua::TuxinjectorCommand::ToggleMode { main, fallback } => {
+                tracing::debug!(main = %main, fallback = %fallback, "Lua: toggle_mode");
+                let mut target = String::new();
+                if let Some(lock) = tx.overlay.get() {
+                    if let Ok(mut overlay) = lock.lock() {
+                        // effective_mode_id returns the transition target mid-bounce,
+                        // so pressing the key again correctly reverses direction
+                        let in_main = overlay.effective_mode_id() == main.as_str();
+                        target = if in_main { fallback.clone() } else { main.clone() };
+                        tracing::debug!(
+                            effective = overlay.effective_mode_id(),
+                            in_main,
+                            target = %target,
+                            "toggle_mode: resolved via effective_mode_id"
+                        );
+                        overlay.switch_mode(&target);
+                    }
+                }
+                if !target.is_empty() {
+                    tuxinjector_lua::update_mode_name(&target);
+                    apply_mode_sensitivity(&target, &tx.config);
+                }
+            }
+            tuxinjector_lua::TuxinjectorCommand::ToggleGui => {
+                tracing::debug!("Lua: toggle_gui");
+                if let Some(lock) = tx.overlay.get() {
+                    if let Ok(mut overlay) = lock.lock() {
+                        overlay.toggle_gui();
+                    }
+                }
+            }
+            tuxinjector_lua::TuxinjectorCommand::SetSensitivity(s) => {
+                tracing::debug!(sensitivity = s, "Lua: set_sensitivity");
+                tuxinjector_input::set_mode_sensitivity(s, None);
+            }
+            tuxinjector_lua::TuxinjectorCommand::Exec(cmd_str) => {
+                let name = cmd_str.split_whitespace()
+                    .next()
+                    .and_then(|s| s.rsplit('/').next())
+                    .unwrap_or("exec")
+                    .to_string();
+
+                match std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&cmd_str)
+                    .env("GDK_BACKEND", "x11")
+                    .env("_JAVA_AWT_WM_NONREPARENTING", "1")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    Ok(child) => {
+                        let pid = child.id();
+                        tuxinjector_gui::running_apps::register(
+                            pid,
+                            &name,
+                            tuxinjector_gui::running_apps::LaunchMode::Anchored(
+                                tuxinjector_gui::running_apps::Anchor::TopRight,
+                            ),
+                        );
+                        tracing::info!(pid, name = %name, cmd = %cmd_str, "exec: spawned (anchored top-right)");
+                        if let Ok(mut guard) = EXEC_CHILDREN.lock() {
+                            guard.push((child, name));
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(cmd = %cmd_str, %e, "exec: spawn failed");
+                    }
+                }
+            }
+            tuxinjector_lua::TuxinjectorCommand::ToggleAppVisibility => {
+                tracing::debug!("Lua: toggle_app_visibility");
+                if let Some(lock) = tx.overlay.get() {
+                    if let Ok(mut overlay) = lock.lock() {
+                        overlay.toggle_app_visibility();
+                    }
+                }
+            }
+            tuxinjector_lua::TuxinjectorCommand::PressKey(key) => {
+                tracing::debug!(key, "Lua: press_key");
+                unsafe { tuxinjector_input::press_key_to_game(key); }
+            }
+            tuxinjector_lua::TuxinjectorCommand::Log(msg) => {
+                tracing::info!(target: "lua", "{msg}");
+            }
+        }
+    }
+}
+
+// apply per-mode sensitivity override after switching modes
+fn apply_mode_sensitivity(mode_id: &str, config: &std::sync::Arc<tuxinjector_config::ConfigSnapshot>) {
+    let cfg = config.load();
+    if let Some(mode) = cfg.modes.iter().find(|m| m.id == mode_id) {
+        if mode.sensitivity_override_enabled {
+            let sep = if mode.separate_xy_sensitivity {
+                Some((mode.mode_sensitivity_x, mode.mode_sensitivity_y))
+            } else {
+                None
+            };
+            tuxinjector_input::set_mode_sensitivity(mode.mode_sensitivity, sep);
+        } else {
+            tuxinjector_input::clear_mode_sensitivity();
+        }
+    }
+}
+
+// --- GL constants ---
+
+const GL_FRAMEBUFFER: u32 = 0x8D40;
+const GL_READ_FRAMEBUFFER: u32 = 0x8CA8;
+const GL_DRAW_FRAMEBUFFER: u32 = 0x8CA9;
+const GL_COLOR_ATTACHMENT0: u32 = 0x8CE0;
+const GL_TEXTURE_2D: u32 = 0x0DE1;
+const GL_RGBA8: u32 = 0x8058;
+const GL_RGBA: u32 = 0x1908;
+const GL_UNSIGNED_BYTE: u32 = 0x1401;
+const GL_COLOR_BUFFER_BIT: u32 = 0x0000_4000;
+const GL_NEAREST: u32 = 0x2600;
+const GL_FRAMEBUFFER_COMPLETE: u32 = 0x8CD5;
+const GL_TEXTURE_MAG_FILTER: u32 = 0x2800;
+const GL_TEXTURE_MIN_FILTER: u32 = 0x2801;
+const GL_SCISSOR_TEST: u32 = 0x0C11;
+const GL_BACK: u32 = 0x0405;
+const GL_DRAW_BUFFER: u32 = 0x0C01;
+const GL_READ_BUFFER: u32 = 0x0C02;
+
+const GL_FRAMEBUFFER_BINDING: u32 = 0x8CA6;
+const GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE: u32 = 0x8CD0;
+const GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME: u32 = 0x8CD1;
+const GL_TEXTURE: u32 = 0x1702;
+const GL_TEXTURE_WIDTH: u32 = 0x1000;
+const GL_TEXTURE_HEIGHT: u32 = 0x1001;
+
+// --- game FBO scanning ---
+// looks for Sodium's texture-backed FBO by probing IDs 1-64
+
+type GlGetFbAttachParamFn = unsafe extern "C" fn(u32, u32, u32, *mut i32);
+type GlGetTexLevelParamFn = unsafe extern "C" fn(u32, i32, u32, *mut i32);
+type GlIsFramebufferFn = unsafe extern "C" fn(u32) -> u8;
+
+static GLFB_ATTACH: std::sync::OnceLock<GlGetFbAttachParamFn> = std::sync::OnceLock::new();
+static GLTEX_LEVEL: std::sync::OnceLock<GlGetTexLevelParamFn> = std::sync::OnceLock::new();
+static GL_IS_FB: std::sync::OnceLock<GlIsFramebufferFn> = std::sync::OnceLock::new();
+
+unsafe fn resolve_once<F: Copy>(lock: &std::sync::OnceLock<F>, name: &[u8]) -> Option<F> {
+    Some(*lock.get_or_init(|| {
+        let p = crate::dlsym_hook::resolve_real_symbol(name);
+        if p.is_null() { return std::mem::zeroed(); }
+        std::mem::transmute_copy(&p)
+    }))
+}
+
+/// Find an FBO whose color attachment matches `mode_w x mode_h`.
+pub unsafe fn find_game_fbo(
+    gl: &crate::gl_resolve::GlFunctions,
+    mode_w: u32,
+    mode_h: u32,
+) -> u32 {
+    find_game_fbo_and_texture(gl, mode_w, mode_h).0
+}
+
+/// Same as find_game_fbo but also returns the texture ID.
+pub unsafe fn find_game_fbo_and_texture(
+    gl: &crate::gl_resolve::GlFunctions,
+    mode_w: u32,
+    mode_h: u32,
+) -> (u32, u32) {
+    let get_fb_attach: GlGetFbAttachParamFn =
+        match resolve_once(&GLFB_ATTACH, b"glGetFramebufferAttachmentParameteriv\0") {
+            Some(f) if (f as *const () as usize) != 0 => f,
+            _ => return (0, 0),
+        };
+    let get_tex_level: GlGetTexLevelParamFn =
+        match resolve_once(&GLTEX_LEVEL, b"glGetTexLevelParameteriv\0") {
+            Some(f) if (f as *const () as usize) != 0 => f,
+            _ => return (0, 0),
+        };
+    let is_fb: GlIsFramebufferFn =
+        match resolve_once(&GL_IS_FB, b"glIsFramebuffer\0") {
+            Some(f) if (f as *const () as usize) != 0 => f,
+            _ => return (0, 0),
+        };
+
+    let mut prev_fbo = 0i32;
+    (gl.get_integer_v)(GL_FRAMEBUFFER_BINDING, &mut prev_fbo);
+
+    let mut found = (0u32, 0u32);
+    for id in 1..=64u32 {
+        if is_fb(id) == 0 { continue; }
+
+        (gl.bind_framebuffer)(GL_FRAMEBUFFER, id);
+        if (gl.check_framebuffer_status)(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE {
+            continue;
+        }
+
+        let mut obj_type = 0i32;
+        get_fb_attach(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+            GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE, &mut obj_type);
+        if obj_type as u32 != GL_TEXTURE { continue; }
+
+        let mut tex = 0i32;
+        get_fb_attach(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+            GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME, &mut tex);
+        if tex <= 0 { continue; }
+
+        // check the texture dimensions
+        (gl.bind_texture)(GL_TEXTURE_2D, tex as u32);
+        let mut tw = 0i32;
+        let mut th = 0i32;
+        get_tex_level(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &mut tw);
+        get_tex_level(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &mut th);
+        (gl.bind_texture)(GL_TEXTURE_2D, 0);
+
+        if tw as u32 == mode_w && th as u32 == mode_h {
+            found = (id, tex as u32);
+            tracing::debug!(fbo = id, tex, tw, th, "find_game_fbo: match");
+            break;
+        }
+    }
+
+    (gl.bind_framebuffer)(GL_FRAMEBUFFER, prev_fbo as u32);
+    found
+}
+
+// --- centering game content in oversized/undersized modes ---
+
+// When the game renders at a different resolution than the physical window,
+// blit the game content to the correct centered position.
+unsafe fn center_game_content(
+    gl: &crate::gl_resolve::GlFunctions,
+    mode_w: u32,
+    mode_h: u32,
+    orig_w: u32,
+    orig_h: u32,
+) {
+    // figure out src/dst offsets per axis
+    let (src_x, src_y, dst_x, dst_y, bw, bh);
+
+    if mode_w <= orig_w {
+        src_x = 0;
+        dst_x = (orig_w as i32 - mode_w as i32) / 2;
+        bw = mode_w as i32;
+    } else {
+        src_x = (mode_w as i32 - orig_w as i32) / 2;
+        dst_x = 0;
+        bw = orig_w as i32;
+    }
+
+    if mode_h <= orig_h {
+        src_y = 0;
+        dst_y = (orig_h as i32 - mode_h as i32) / 2;
+        bh = mode_h as i32;
+    } else {
+        src_y = (mode_h as i32 - orig_h as i32) / 2;
+        dst_y = 0;
+        bh = orig_h as i32;
+    }
+
+    // nothing to do if it's already perfectly aligned
+    if src_x == 0 && src_y == 0 && dst_x == 0 && dst_y == 0 {
+        return;
+    }
+
+    static CENTER_FBO: AtomicU32 = AtomicU32::new(0);
+    static CENTER_TEX: AtomicU32 = AtomicU32::new(0);
+    static CENTER_TEX_W: AtomicU32 = AtomicU32::new(0);
+    static CENTER_TEX_H: AtomicU32 = AtomicU32::new(0);
+
+    let mut fbo = CENTER_FBO.load(Ordering::Relaxed);
+    let mut tex = CENTER_TEX.load(Ordering::Relaxed);
+
+    if fbo == 0 {
+        let mut ids = [0u32; 1];
+        (gl.gen_framebuffers)(1, ids.as_mut_ptr());
+        fbo = ids[0];
+        CENTER_FBO.store(fbo, Ordering::Relaxed);
+
+        (gl.gen_textures)(1, ids.as_mut_ptr());
+        tex = ids[0];
+        CENTER_TEX.store(tex, Ordering::Relaxed);
+    }
+
+    // resize the temp texture if needed
+    let prev_w = CENTER_TEX_W.load(Ordering::Relaxed);
+    let prev_h = CENTER_TEX_H.load(Ordering::Relaxed);
+    if prev_w != bw as u32 || prev_h != bh as u32 {
+        (gl.bind_texture)(GL_TEXTURE_2D, tex);
+        (gl.tex_image_2d)(
+            GL_TEXTURE_2D, 0, GL_RGBA8 as i32,
+            bw, bh, 0, GL_RGBA, GL_UNSIGNED_BYTE, std::ptr::null(),
+        );
+        (gl.tex_parameter_i)(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST as i32);
+        (gl.tex_parameter_i)(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST as i32);
+        (gl.bind_texture)(GL_TEXTURE_2D, 0);
+
+        (gl.bind_framebuffer)(GL_FRAMEBUFFER, fbo);
+        (gl.framebuffer_texture_2d)(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        let status = (gl.check_framebuffer_status)(GL_FRAMEBUFFER);
+        (gl.bind_framebuffer)(GL_FRAMEBUFFER, 0);
+
+        if status != GL_FRAMEBUFFER_COMPLETE {
+            tracing::error!(status, "center_game_content: FBO incomplete");
+            return;
+        }
+        CENTER_TEX_W.store(bw as u32, Ordering::Relaxed);
+        CENTER_TEX_H.store(bh as u32, Ordering::Relaxed);
+        tracing::debug!(bw, bh, fbo, tex, "center_game_content: FBO/tex allocated");
+    }
+
+    let mut prev_draw = 0i32;
+    let mut prev_read = 0i32;
+    (gl.get_integer_v)(GL_DRAW_BUFFER, &mut prev_draw);
+    (gl.get_integer_v)(GL_READ_BUFFER, &mut prev_read);
+
+    // for oversized modes, try reading from the game's internal FBO.
+    // if the glBindFramebuffer hook isn't active, the virtual_fb redirect
+    // never fired so the game rendered to the real backbuffer (FBO 0).
+    let read_fbo = if mode_h > orig_h || mode_w > orig_w {
+        if crate::viewport_hook::is_glbindframebuffer_hooked() {
+            let f = unsafe { find_game_fbo(gl, mode_w, mode_h) };
+            if f != 0 { f } else { 0 }
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    // step 1: copy game pixels -> temp FBO
+    (gl.bind_framebuffer)(GL_READ_FRAMEBUFFER, read_fbo);
+    if read_fbo == 0 {
+        (gl.read_buffer)(GL_BACK);
+    } else {
+        (gl.read_buffer)(GL_COLOR_ATTACHMENT0);
+    }
+    (gl.bind_framebuffer)(GL_DRAW_FRAMEBUFFER, fbo);
+    (gl.draw_buffer)(GL_COLOR_ATTACHMENT0);
+    (gl.blit_framebuffer)(
+        src_x, src_y, src_x + bw, src_y + bh,
+        0, 0, bw, bh,
+        GL_COLOR_BUFFER_BIT, GL_NEAREST,
+    );
+
+    // step 2: clear back buffer fully
+    (gl.bind_framebuffer)(GL_DRAW_FRAMEBUFFER, 0);
+    (gl.disable)(GL_SCISSOR_TEST);
+    (gl.clear_color)(0.0, 0.0, 0.0, 1.0);
+    (gl.viewport)(0, 0, orig_w as i32, orig_h as i32);
+    (gl.clear)(GL_COLOR_BUFFER_BIT);
+
+    // step 3: blit temp -> centered position in back buffer
+    (gl.bind_framebuffer)(GL_READ_FRAMEBUFFER, fbo);
+    (gl.bind_framebuffer)(GL_DRAW_FRAMEBUFFER, 0);
+    (gl.read_buffer)(GL_COLOR_ATTACHMENT0);
+    (gl.draw_buffer)(GL_BACK);
+    (gl.blit_framebuffer)(
+        0, 0, bw, bh,
+        dst_x, dst_y, dst_x + bw, dst_y + bh,
+        GL_COLOR_BUFFER_BIT, GL_NEAREST,
+    );
+
+    (gl.bind_framebuffer)(GL_FRAMEBUFFER, 0);
+    if prev_draw != 0 { (gl.draw_buffer)(prev_draw as u32); }
+    if prev_read != 0 { (gl.read_buffer)(prev_read as u32); }
+
+    tracing::debug!(src_x, src_y, dst_x, dst_y, bw, bh, "center_game_content: done");
+}
+
+
+// main per-frame render path
+unsafe fn render_overlay() {
+    if !INITIALIZED.load(Ordering::Acquire) { return; }
+
+    let t0 = std::time::Instant::now();
+
+    capture_original_size();
+    crate::viewport_hook::poll_borderless_toggle();
+    process_lua_commands();
+
+    let t_pre = std::time::Instant::now();
+
+    let tx = state::get();
+
+    let (w, h) = {
+        let (ow, oh) = crate::viewport_hook::get_original_size();
+        if ow > 0 && oh > 0 { (ow, oh) } else { return; }
+    };
+
+    if w == 0 || h == 0 { return; }
+
+    if let Some(lock) = tx.overlay.get() {
+        if let Ok(mut overlay) = lock.lock() {
+            let t_lock = std::time::Instant::now();
+
+            if let Some(gl) = tx.gl.get() {
+                let (mw, mh) = crate::viewport_hook::get_mode_size();
+                let _oversized = mw > 0 && mh > 0
+                    && crate::viewport_hook::is_oversized(mw, mh, w, h);
+
+                if mw > 0 && mh > 0 && (mw != w || mh != h)
+                    && !crate::viewport_hook::is_gl_viewport_hooked()
+                {
+                    center_game_content(gl, mw, mh, w, h);
+                }
+
+                (gl.viewport)(0, 0, w as i32, h as i32);
+                if let Err(e) = overlay.render_and_composite(w, h) {
+                    tracing::error!("overlay render failed: {e}");
+                }
+            } else if let Err(e) = overlay.render_and_composite(w, h) {
+                tracing::error!("overlay render failed: {e}");
+            }
+
+            // keep Lua's active_res() in sync
+            let (rw, rh) = crate::viewport_hook::get_mode_size();
+            if rw > 0 && rh > 0 {
+                tuxinjector_lua::update_active_res(rw, rh);
+            } else {
+                tuxinjector_lua::update_active_res(w, h);
+            }
+
+            let t_done = std::time::Instant::now();
+
+            // periodic perf breakdown
+            static SWAP_CTR: std::sync::atomic::AtomicU32 =
+                std::sync::atomic::AtomicU32::new(0);
+            let ctr = SWAP_CTR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let log_perf = tx.config.load().advanced.debug.log_performance;
+            if log_perf && ctr % 300 == 0 {
+                tracing::info!(
+                    preamble_us = t_pre.duration_since(t0).as_micros() as u64,
+                    lock_us = t_lock.duration_since(t_pre).as_micros() as u64,
+                    render_us = t_done.duration_since(t_lock).as_micros() as u64,
+                    total_us = t_done.duration_since(t0).as_micros() as u64,
+                    "PERF: render_overlay timing"
+                );
+            }
+        }
+    }
+}
+
+// --- setters (called from dlsym_hook) ---
+
+pub fn store_real_egl_swap(ptr: *mut c_void) {
+    REAL_EGL_SWAP.store(ptr, Ordering::Release);
+    resolve_original_egl_swap();
+}
+
+pub fn store_real_glx_swap(ptr: *mut c_void) {
+    REAL_GLX_SWAP.store(ptr, Ordering::Release);
+    resolve_original_glx_swap();
+}
+
+// try to grab eglSwapBuffers directly from the EGL library,
+// bypassing any other hooks in the LD_PRELOAD chain
+fn resolve_original_egl_swap() {
+    const LIBS: &[&[u8]] = &[b"libEGL.so.1\0", b"libEGL.so\0"];
+
+    for lib in LIBS {
+        let handle = unsafe {
+            libc::dlopen(lib.as_ptr() as *const _, libc::RTLD_NOLOAD | libc::RTLD_LAZY)
+        };
+        if handle.is_null() { continue; }
+
+        let ptr = crate::dlsym_hook::resolve_real_symbol_from(handle, b"eglSwapBuffers\0");
+        unsafe { libc::dlclose(handle) };
+
+        if !ptr.is_null() {
+            ORIGINAL_EGL_SWAP.store(ptr, Ordering::Release);
+            tracing::debug!("resolved original eglSwapBuffers from {:?}", std::str::from_utf8(&lib[..lib.len()-1]));
+            return;
+        }
+    }
+    tracing::debug!("couldn't resolve original eglSwapBuffers from lib, using RTLD_NEXT pointer");
+}
+
+fn resolve_original_glx_swap() {
+    const LIBS: &[&[u8]] = &[
+        b"libGLX.so.0\0",
+        b"libGLX.so\0",
+        b"libGL.so.1\0",
+        b"libGL.so\0",
+    ];
+
+    for lib in LIBS {
+        let handle = unsafe {
+            libc::dlopen(lib.as_ptr() as *const _, libc::RTLD_NOLOAD | libc::RTLD_LAZY)
+        };
+        if handle.is_null() { continue; }
+
+        let ptr = crate::dlsym_hook::resolve_real_symbol_from(handle, b"glXSwapBuffers\0");
+        unsafe { libc::dlclose(handle) };
+
+        if !ptr.is_null() {
+            ORIGINAL_GLX_SWAP.store(ptr, Ordering::Release);
+            tracing::debug!("resolved original glXSwapBuffers from {:?}", std::str::from_utf8(&lib[..lib.len()-1]));
+            return;
+        }
+    }
+    tracing::debug!("couldn't resolve original glXSwapBuffers from lib, using RTLD_NEXT pointer");
+}
+
+// pick which swap fn to call: the driver-direct one (skip hook chain)
+// or the RTLD_NEXT one (go through chain)
+fn select_swap_ptr(
+    rtld_next: &AtomicPtr<c_void>,
+    original: &AtomicPtr<c_void>,
+) -> *mut c_void {
+    let skip_chain = if INITIALIZED.load(Ordering::Acquire) {
+        let cfg = state::get().config.load();
+        cfg.advanced.disable_hook_chaining
+            || cfg.advanced.hook_chaining_next_target
+                == tuxinjector_config::types::HookChainingNextTarget::OriginalFunction
+    } else {
+        true // before config loads, default to skipping other hooks
+    };
+
+    if skip_chain {
+        let orig = original.load(Ordering::Acquire);
+        if !orig.is_null() { return orig; }
+    }
+
+    rtld_next.load(Ordering::Acquire)
+}
+
+// --- hooked swap fns ---
+
+#[no_mangle]
+pub unsafe extern "C" fn hooked_egl_swap_buffers(
+    display: *mut c_void,
+    surface: *mut c_void,
+) -> i32 {
+    first_frame_init();
+
+    let frame = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
+    if frame % LOG_INTERVAL == 0 {
+        tracing::debug!(frame, "eglSwapBuffers");
+    }
+
+    if INITIALIZED.load(Ordering::Acquire) {
+        let cfg = state::get().config.load();
+        let fps = effective_fps(cfg.display.fps_limit);
+        frame_limit(fps, cfg.display.fps_limit_sleep_threshold);
+        if let Some(ps) = state::get().perf_stats.get() {
+            ps.record_frame();
+        }
+    }
+
+    render_overlay();
+
+    let ptr = select_swap_ptr(&REAL_EGL_SWAP, &ORIGINAL_EGL_SWAP);
+    if ptr.is_null() {
+        tracing::error!("hooked_egl_swap_buffers: real pointer is null!");
+        return 0;
+    }
+
+    let real: EglSwapBuffersFn = std::mem::transmute(ptr);
+    real(display, surface)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn hooked_glx_swap_buffers(display: *mut c_void, drawable: u64) {
+    first_frame_init();
+
+    let frame = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
+    if frame % LOG_INTERVAL == 0 {
+        tracing::debug!(frame, "glXSwapBuffers");
+    }
+
+    if INITIALIZED.load(Ordering::Acquire) {
+        let cfg = state::get().config.load();
+        let fps = effective_fps(cfg.display.fps_limit);
+        frame_limit(fps, cfg.display.fps_limit_sleep_threshold);
+        if let Some(ps) = state::get().perf_stats.get() {
+            ps.record_frame();
+        }
+    }
+
+    render_overlay();
+
+    let ptr = select_swap_ptr(&REAL_GLX_SWAP, &ORIGINAL_GLX_SWAP);
+    if ptr.is_null() {
+        tracing::error!("hooked_glx_swap_buffers: real pointer is null!");
+        return;
+    }
+
+    let real: GlxSwapBuffersFn = std::mem::transmute(ptr);
+    real(display, drawable);
+}
