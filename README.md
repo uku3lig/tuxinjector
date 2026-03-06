@@ -1,5 +1,7 @@
 # tuxinjector
 
+> **Tuxinjector is NOT legal to use in speedrun.com submissions or MCSR Ranked yet. Do not use it in runs you intend to submit or in ranked matches.**
+
 A pure-Rust overlay which injects into Minecraft's rendering pipeline on Linux by using `LD_PRELOAD`. This makes it render directly in the game's OpenGL backbuffer, which easily provides real time resizing and overlays for speedrunning (Or just general use) without any external capture or compositing overhead.
 
 **[Full documentation](https://flammablebunny.github.io/tuxinjector/)**
