@@ -33,7 +33,7 @@ To inject Tuxinjector into Minecraft while using [Prism Launcher](https://prisml
 ![Image of Prism Launcher Custom Commands tab, showing the wrapper command](images/wrapper-prism.png)
 
 !!! tip
-    Unlike [waywall](https://github.com/tesselslate/waywall) which uses `waywall --wrap` as the wrapper command to launch a nested compositor, Tuxinjector injects **directly** into the game process via `LD_PRELOAD`. The `env` command simply sets the environment variable that tells the dynamic linker to load Tuxinjector's shared library into Java before Minecraft starts.
+    Unlike [waywall](https://github.com/tesselslate/waywall) which uses `waywall wrap --` as the wrapper command to launch a nested compositor, Tuxinjector injects **directly** into the game process via `LD_PRELOAD`. The `env` command simply sets the environment variable that tells the dynamic linker to load Tuxinjector's shared library into Java before Minecraft starts.
 
 
 !!! note
