@@ -177,11 +177,16 @@ impl TuxinjectorInputHandler {
 }
 
 impl InputHandler for TuxinjectorInputHandler {
-    fn handle_key(&mut self, key: i32, _scancode: i32, action: i32, mods: i32) -> (bool, i32) {
+    fn handle_key(&mut self, key: i32, scancode: i32, action: i32, mods: i32) -> (bool, i32) {
         self.maybe_reload();
 
+        // forward key presses to embedded companion apps via stdin
+        if action == 1 {
+            crate::app_capture::push_app_key(key, scancode, mods, true);
+        }
+
         let orig = key;
-        let remapped = self.rebinder.remap_key(key);
+        let remapped = self.rebinder.remap_key(key, scancode);
 
         // GUI key capture mode - grab the key for the hotkey editor
         if tuxinjector_input::is_gui_capture_mode() && action == 1 /* PRESS */ {
@@ -191,7 +196,7 @@ impl InputHandler for TuxinjectorInputHandler {
 
         if tuxinjector_input::gui_is_visible() {
             // always check hotkeys so toggle-GUI can close the GUI
-            let (consumed, actions) = self.hotkeys.process_key(orig, action, mods);
+            let (consumed, actions) = self.hotkeys.process_key(orig, scancode, action, mods);
 
             if consumed {
                 for a in &actions { self.dispatch(a); }
@@ -205,7 +210,7 @@ impl InputHandler for TuxinjectorInputHandler {
         }
 
         // normal path: run hotkey engine with the physical key
-        let (consumed, actions) = self.hotkeys.process_key(orig, action, mods);
+        let (consumed, actions) = self.hotkeys.process_key(orig, scancode, action, mods);
         for a in &actions { self.dispatch(a); }
 
         (consumed, remapped)
@@ -217,7 +222,7 @@ impl InputHandler for TuxinjectorInputHandler {
         self.maybe_reload();
 
         let encoded = button + MOUSE_BUTTON_OFFSET;
-        let mut remapped = self.rebinder.remap_key(encoded);
+        let mut remapped = self.rebinder.remap_key(encoded, 0);
 
         // no forward match - try reverse (e.g. "RShift -> Mouse5" means
         // pressing Mouse5 should act as RShift for hotkey purposes)
@@ -241,7 +246,7 @@ impl InputHandler for TuxinjectorInputHandler {
             return (true, encoded);
         }
 
-        let (consumed, actions) = self.hotkeys.process_key(remapped, action, mods);
+        let (consumed, actions) = self.hotkeys.process_key(remapped, 0, action, mods);
         for a in &actions { self.dispatch(a); }
         if consumed { return (true, encoded); }
 

@@ -1,6 +1,9 @@
 // Tracks companion apps launched from the Apps tab.
 // Just a Vec behind a mutex. Keeps it simple.
 
+use std::collections::HashMap;
+use std::io::Write;
+use std::process::ChildStdin;
 use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,8 +94,38 @@ pub fn unregister(pid: u32) {
     if let Ok(mut list) = registry().lock() {
         list.retain(|a| a.pid != pid);
     }
+    unregister_stdin(pid);
 }
 
 pub fn list() -> Vec<RunningApp> {
     registry().lock().map(|g| g.clone()).unwrap_or_default()
+}
+
+// --- Stdin piping for companion app key forwarding ---
+
+fn stdin_map() -> &'static Mutex<HashMap<u32, ChildStdin>> {
+    static MAP: OnceLock<Mutex<HashMap<u32, ChildStdin>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn register_stdin(pid: u32, stdin: ChildStdin) {
+    if let Ok(mut map) = stdin_map().lock() {
+        map.insert(pid, stdin);
+    }
+}
+
+pub fn unregister_stdin(pid: u32) {
+    if let Ok(mut map) = stdin_map().lock() {
+        map.remove(&pid);
+    }
+}
+
+/// Write a line to a companion app's stdin.
+pub fn write_stdin(pid: u32, data: &[u8]) {
+    if let Ok(mut map) = stdin_map().lock() {
+        if let Some(stdin) = map.get_mut(&pid) {
+            let _ = stdin.write_all(data);
+            let _ = stdin.flush();
+        }
+    }
 }

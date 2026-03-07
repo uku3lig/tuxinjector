@@ -243,7 +243,9 @@ fn uninstall_app(id: &str) -> Result<(), String> {
 }
 
 // Build LD_LIBRARY_PATH so Java AWT can find X11/GL libs on NixOS.
-// Scrapes /proc/self/maps for /nix/store/*/lib paths.
+// Scrapes /proc/self/maps for /nix/store/*/lib paths, then resolves
+// additional X11 libs (libXtst, libXi, etc.) that companion apps need
+// but the game doesn't load.
 fn nix_ld_path() -> String {
     let mut dirs = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -255,6 +257,15 @@ fn nix_ld_path() -> String {
             let Some((dir, _)) = path.rsplit_once('/') else { continue };
             if dir.ends_with("/lib") && seen.insert(dir.to_string()) {
                 dirs.push(dir.to_string());
+            }
+        }
+    }
+
+    // on NixOS, resolve X11 libs that companion apps need (cached)
+    if let Some(x11) = nixos_x11_lib_path() {
+        for entry in x11.split(':') {
+            if !entry.is_empty() && seen.insert(entry.to_string()) {
+                dirs.push(entry.to_string());
             }
         }
     }
@@ -271,10 +282,54 @@ fn nix_ld_path() -> String {
     dirs.join(":")
 }
 
+// Resolve X11 library paths on NixOS via `nix eval`. Cached per session.
+fn nixos_x11_lib_path() -> Option<String> {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Option<String>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        if !std::path::Path::new("/etc/NIXOS").exists() {
+            return None;
+        }
+        let expr = concat!(
+            "with import <nixpkgs> {}; lib.makeLibraryPath [ ",
+            "libxtst libxi libxt libxinerama libxkbcommon ",
+            "libx11 libxcb libxext libxrender libxfixes libxrandr libxcursor ",
+            "]",
+        );
+        let output = std::process::Command::new("nix")
+            .args(["eval", "--raw", "--impure", "--expr", expr])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            tracing::warn!("nix eval failed for X11 libs, companion app hotkeys may not work");
+            return None;
+        }
+        let paths = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if paths.is_empty() { None } else {
+            tracing::info!(libs = %paths, "resolved NixOS X11 library paths");
+            Some(paths)
+        }
+    }).clone()
+}
+
+// Resolve the java binary: prefer the game's own JVM (via /proc/self/exe),
+// fall back to "java" on PATH.
+fn resolve_java() -> String {
+    if let Ok(exe) = std::fs::read_link("/proc/self/exe") {
+        let s = exe.to_string_lossy().to_string();
+        if s.contains("java") || s.contains("jdk") || s.contains("jre") {
+            tracing::info!(java = %s, "using game's JVM for companion app");
+            return s;
+        }
+    }
+    "java".to_string()
+}
+
 fn launch_app(jar: &Path, extra_args: &[&str]) -> Result<std::process::Child, String> {
     let ld = nix_ld_path();
+    let java = resolve_java();
 
-    let mut cmd = std::process::Command::new("java");
+    let mut cmd = std::process::Command::new(&java);
     cmd.arg("-Dswing.defaultlaf=javax.swing.plaf.metal.MetalLookAndFeel")
         .arg("-Dawt.useSystemAAFontSettings=on")
         .arg("-jar")
@@ -282,9 +337,11 @@ fn launch_app(jar: &Path, extra_args: &[&str]) -> Result<std::process::Child, St
         .args(extra_args)
         .env_remove("WAYLAND_DISPLAY")
         .env_remove("WAYLAND_SOCKET")
+        .env_remove("LD_PRELOAD")
         .env("_JAVA_AWT_WM_NONREPARENTING", "1")
+        .env("TUXINJECTOR_STDIN_KEYS", "1")
         .env("LD_LIBRARY_PATH", &ld)
-        .stdin(std::process::Stdio::null())
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     cmd.spawn()
@@ -299,8 +356,12 @@ fn do_launch(
     slot: &mut Option<std::process::Child>,
 ) {
     match launch_app(jar, extra_args) {
-        Ok(child) => {
-            super::super::running_apps::register(child.id(), name, mode);
+        Ok(mut child) => {
+            let pid = child.id();
+            if let Some(stdin) = child.stdin.take() {
+                super::super::running_apps::register_stdin(pid, stdin);
+            }
+            super::super::running_apps::register(pid, name, mode);
             let info = match mode {
                 LaunchMode::Anchored(a) => format!("launched (anchored {})", a.label()),
                 LaunchMode::Detached => "launched (detached)".to_string(),

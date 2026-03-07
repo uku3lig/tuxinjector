@@ -566,27 +566,36 @@ impl OverlayState {
             for pid in stale { self.app_capture.drop_window(pid); }
 
             for app in &running {
-                if let LaunchMode::Anchored(anchor) = app.mode {
-                    if !self.windows_visible { continue; }
-                    if let Some(cap) = self.app_capture.embed(app.pid, vp_w, vp_h, anchor) {
-                        scene.elements.push(SceneElement::Textured {
-                            x: cap.anchor_x, y: cap.anchor_y,
-                            w: cap.width as f32, h: cap.height as f32,
-                            tex_width: cap.width, tex_height: cap.height,
-                            pixels: cap.pixels,
-                            circle_clip: false, nearest_filter: true,
-                            filter_target_colors: Vec::new(),
-                            filter_output_color: [0.0; 4],
-                            filter_sensitivity: 0.0,
-                            filter_color_passthrough: false,
-                            filter_border_color: [0.0; 4],
-                            filter_border_width: 0,
-                            filter_gamma_mode: 0,
-                            custom_shader: None,
-                        });
+                match app.mode {
+                    LaunchMode::Anchored(anchor) => {
+                        if !self.windows_visible { continue; }
+                        if let Some(cap) = self.app_capture.embed(app.pid, vp_w, vp_h, anchor) {
+                            scene.elements.push(SceneElement::Textured {
+                                x: cap.anchor_x, y: cap.anchor_y,
+                                w: cap.width as f32, h: cap.height as f32,
+                                tex_width: cap.width, tex_height: cap.height,
+                                pixels: cap.pixels,
+                                circle_clip: false, nearest_filter: true,
+                                filter_target_colors: Vec::new(),
+                                filter_output_color: [0.0; 4],
+                                filter_sensitivity: 0.0,
+                                filter_color_passthrough: false,
+                                filter_border_color: [0.0; 4],
+                                filter_border_width: 0,
+                                filter_gamma_mode: 0,
+                                custom_shader: None,
+                            });
+                        }
+                    }
+                    LaunchMode::Detached => {
+                        // set _NET_WM_WINDOW_TYPE_UTILITY so tiling WMs float the window
+                        self.app_capture.set_float_hint(app.pid);
                     }
                 }
             }
+
+            // forward queued keyboard events to embedded windows
+            self.app_capture.forward_pending_keys();
         }
 
         // plugin overlay submissions
