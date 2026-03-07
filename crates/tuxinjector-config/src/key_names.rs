@@ -8,6 +8,12 @@
 // human-readable string representations, with serde integration for
 // config deserialization/serialization.
 
+use std::borrow::Cow;
+
+// Keycodes at or above this value represent physical scancodes rather than
+// GLFW virtual keycodes. The actual evdev scancode = keycode - SCANCODE_OFFSET.
+pub const SCANCODE_OFFSET: u32 = 2000;
+
 // Parse a "Ctrl+Shift+Z" style combo string → sorted Vec of GLFW keycodes.
 pub fn parse_key_combo_str(combo: &str) -> Result<Vec<u32>, String> {
     let mut keys: Vec<u32> = Vec::new();
@@ -132,7 +138,13 @@ pub fn parse_key_name(name: &str) -> Option<u32> {
         "kp_equal"    | "numpad_equal"    => Some(336),
 
         _ => {
-            // Single printable ASCII character → 1000 + char code
+            // Physical scancode: "scan:30" maps to SCANCODE_OFFSET + 30
+            if let Some(sc) = lower.strip_prefix("scan:").or_else(|| lower.strip_prefix("sc:")) {
+                if let Ok(code) = sc.parse::<u32>() {
+                    return Some(SCANCODE_OFFSET + code);
+                }
+            }
+            // Single printable ASCII character maps to 1000 + char code
             let bytes = lower.as_bytes();
             if bytes.len() == 1 {
                 let c = bytes[0];
@@ -156,12 +168,16 @@ const CHAR_NAMES: [&str; 95] = [
 ];
 
 // GLFW keycode → human-readable display name.
-pub fn keycode_to_name(code: u32) -> &'static str {
+pub fn keycode_to_name(code: u32) -> Cow<'static, str> {
+    // Scancode-based keycodes
+    if code >= SCANCODE_OFFSET {
+        return Cow::Owned(format!("scan:{}", code - SCANCODE_OFFSET));
+    }
     // Character keycodes reside at offset 1000 + ASCII value.
     if code >= 1032 && code <= 1126 {
-        return CHAR_NAMES[(code - 1032) as usize];
+        return Cow::Borrowed(CHAR_NAMES[(code - 1032) as usize]);
     }
-    match code {
+    Cow::Borrowed(match code {
         65  => "A",  66  => "B",  67  => "C",  68  => "D",
         69  => "E",  70  => "F",  71  => "G",  72  => "H",
         73  => "I",  74  => "J",  75  => "K",  76  => "L",
@@ -246,7 +262,7 @@ pub fn keycode_to_name(code: u32) -> &'static str {
         336 => "KP=",
 
         _ => "unknown",
-    }
+    })
 }
 
 // Format a slice of GLFW keycodes → "Ctrl+Shift+Z" style combo string.
@@ -324,10 +340,10 @@ where
     let mut seq = serializer.serialize_seq(Some(keys.len()))?;
     for &code in keys {
         let name = keycode_to_name(code);
-        if name == "unknown" {
+        if *name == *"unknown" {
             seq.serialize_element(&code)?;
         } else {
-            seq.serialize_element(name)?;
+            seq.serialize_element(&*name)?;
         }
     }
     seq.end()
@@ -339,9 +355,9 @@ where
     S: serde::Serializer,
 {
     let name = keycode_to_name(*code);
-    if name == "unknown" || *code == 0 {
+    if *name == *"unknown" || *code == 0 {
         serializer.serialize_u32(*code)
     } else {
-        serializer.serialize_str(name)
+        serializer.serialize_str(&name)
     }
 }

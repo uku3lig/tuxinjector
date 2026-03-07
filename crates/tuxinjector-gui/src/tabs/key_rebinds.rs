@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use tuxinjector_config::key_names::{keycode_to_name, parse_key_name};
 use tuxinjector_config::types::KeyRebind;
 use tuxinjector_config::Config;
@@ -303,7 +305,7 @@ fn draw_key_row(
         paint_key(ui, p0, p1, label, tgt, ct, has, disabled, sel);
 
         if hovered && has {
-            let gn = tgt.map(keycode_to_name).unwrap_or("(none)");
+            let gn = tgt.map(keycode_to_name).unwrap_or(Cow::Borrowed("(none)"));
             if let Some(ck) = ct {
                 ui.tooltip_text(format!("{} -> {} (game), {} (chat)", label, gn, keycode_to_name(ck)));
             } else {
@@ -395,7 +397,7 @@ fn paint_key(
             // two-line: label + target
             let tgt_name = keycode_to_name(gt);
             let lsz = ui.calc_text_size(label);
-            let tsz = ui.calc_text_size(tgt_name);
+            let tsz = ui.calc_text_size(&*tgt_name);
             let line_gap = 1.0;
             let total = lsz[1] + tsz[1] + line_gap;
             let y0 = p0[1] + (kh - total) * 0.5;
@@ -505,7 +507,7 @@ fn draw_mouse(
         paint_key(ui, bmin, bmax, label, tgt, ct, has, dis, sel);
 
         if hovered && has {
-            let gn = tgt.map(keycode_to_name).unwrap_or("(none)");
+            let gn = tgt.map(keycode_to_name).unwrap_or(Cow::Borrowed("(none)"));
             if let Some(ck) = ct {
                 ui.tooltip_text(format!("{} -> {} (game), {} (chat)", label, gn, keycode_to_name(ck)));
             } else {

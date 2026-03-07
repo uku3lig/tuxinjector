@@ -69,13 +69,14 @@ impl KeyRebinder {
         }
     }
 
-    pub fn remap_key(&self, key: i32) -> i32 {
+    pub fn remap_key(&self, key: i32, scancode: i32) -> i32 {
         if !self.on {
             return key;
         }
+        let sc_key = tuxinjector_config::key_names::SCANCODE_OFFSET as i32 + scancode;
         self.entries
             .iter()
-            .find(|e| e.from == key)
+            .find(|e| e.from == key || (scancode > 0 && e.from == sc_key))
             .map(|e| e.target(self.in_chat))
             .unwrap_or(key)
     }
@@ -134,7 +135,7 @@ mod tests {
         rb.on = true;
         rb.entries.push(mk(65, 66)); // A -> B
 
-        assert_eq!(rb.remap_key(65), 66);
+        assert_eq!(rb.remap_key(65, 0), 66);
     }
 
     #[test]
@@ -143,7 +144,7 @@ mod tests {
         rb.on = true;
         rb.entries.push(mk(65, 66));
 
-        assert_eq!(rb.remap_key(67), 67); // C unchanged
+        assert_eq!(rb.remap_key(67, 0), 67); // C unchanged
     }
 
     #[test]
@@ -152,7 +153,7 @@ mod tests {
         rb.on = false;
         rb.entries.push(mk(65, 66));
 
-        assert_eq!(rb.remap_key(65), 65);
+        assert_eq!(rb.remap_key(65, 0), 65);
     }
 
     #[test]
@@ -163,10 +164,10 @@ mod tests {
         rb.entries.push(mk(67, 68)); // C -> D
         rb.entries.push(mk(69, 70)); // E -> F
 
-        assert_eq!(rb.remap_key(65), 66);
-        assert_eq!(rb.remap_key(67), 68);
-        assert_eq!(rb.remap_key(69), 70);
-        assert_eq!(rb.remap_key(71), 71); // G unchanged
+        assert_eq!(rb.remap_key(65, 0), 66);
+        assert_eq!(rb.remap_key(67, 0), 68);
+        assert_eq!(rb.remap_key(69, 0), 70);
+        assert_eq!(rb.remap_key(71, 0), 71); // G unchanged
     }
 
     #[test]
@@ -175,8 +176,8 @@ mod tests {
         rb.on = true;
         rb.entries.push(mk(344, 404)); // RShift -> Mouse5
 
-        assert_eq!(rb.remap_key(344), 404);
-        assert_eq!(rb.remap_key(404), 404);
+        assert_eq!(rb.remap_key(344, 0), 404);
+        assert_eq!(rb.remap_key(404, 0), 404);
         assert_eq!(rb.reverse_remap_key(404), 344);
         assert_eq!(rb.reverse_remap_key(344), 344);
     }
@@ -188,13 +189,13 @@ mod tests {
         // O -> Q in game, O -> P in chat
         rb.entries.push(mk_split(79, 81, 80));
 
-        assert_eq!(rb.remap_key(79), 81); // game mode by default
+        assert_eq!(rb.remap_key(79, 0), 81); // game mode by default
 
         rb.set_game_state("inworld,cursor_free");
-        assert_eq!(rb.remap_key(79), 80); // chat mode
+        assert_eq!(rb.remap_key(79, 0), 80); // chat mode
 
         rb.set_game_state("inworld,cursor_grabbed");
-        assert_eq!(rb.remap_key(79), 81); // back to game
+        assert_eq!(rb.remap_key(79, 0), 81); // back to game
     }
 
     #[test]
@@ -204,7 +205,7 @@ mod tests {
         rb.entries.push(mk(65, 66)); // to_chat = 0
 
         rb.set_game_state("inworld,cursor_free");
-        assert_eq!(rb.remap_key(65), 66); // falls back to game target
+        assert_eq!(rb.remap_key(65, 0), 66); // falls back to game target
     }
 
     #[test]
@@ -213,7 +214,7 @@ mod tests {
 
         rb.on = true;
         rb.entries.push(mk(65, 66));
-        assert_eq!(rb.remap_key(65), 66);
+        assert_eq!(rb.remap_key(65, 0), 66);
 
         let config = KeyRebindsConfig {
             enabled: true,
@@ -235,8 +236,25 @@ mod tests {
 
         rb.update_from_config(&config);
 
-        assert_eq!(rb.remap_key(65), 65); // old rule gone
-        assert_eq!(rb.remap_key(80), 81); // new rule
-        assert_eq!(rb.remap_key(90), 90); // disabled rule not loaded
+        assert_eq!(rb.remap_key(65, 0), 65); // old rule gone
+        assert_eq!(rb.remap_key(80, 0), 81); // new rule
+        assert_eq!(rb.remap_key(90, 0), 90); // disabled rule not loaded
+    }
+
+    #[test]
+    fn scancode_based_remap() {
+        use tuxinjector_config::key_names::SCANCODE_OFFSET;
+
+        let mut rb = KeyRebinder::new();
+        rb.on = true;
+        // scan:30 (A position) -> B
+        rb.entries.push(mk(SCANCODE_OFFSET as i32 + 30, 66));
+
+        // GLFW key 65 (A) with scancode 30 should match
+        assert_eq!(rb.remap_key(65, 30), 66);
+        // different scancode should not match
+        assert_eq!(rb.remap_key(65, 31), 65);
+        // no scancode should not match
+        assert_eq!(rb.remap_key(65, 0), 65);
     }
 }

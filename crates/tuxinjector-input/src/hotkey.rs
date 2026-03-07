@@ -232,19 +232,24 @@ impl HotkeyEngine {
     }
 
     // Feed a key event in. Returns (consumed, triggered_actions).
-    pub fn process_key(&mut self, key: i32, action: i32, _mods: i32) -> (bool, Vec<HotkeyAction>) {
+    // scancode is the physical evdev scancode from GLFW, used for scan:-prefixed bindings.
+    pub fn process_key(&mut self, key: i32, scancode: i32, action: i32, _mods: i32) -> (bool, Vec<HotkeyAction>) {
+        let sc_key = tuxinjector_config::key_names::SCANCODE_OFFSET as i32 + scancode;
         match action {
             GLFW_PRESS => {
                 self.held.insert(key);
+                if scancode > 0 { self.held.insert(sc_key); }
                 self.fired.clear();
             }
             GLFW_RELEASE => {
                 self.held.remove(&key);
+                self.held.remove(&sc_key);
                 self.fired.clear();
             }
             GLFW_REPEAT => {
                 // re-insert in case wayland lost focus; don't clear fired
                 self.held.insert(key);
+                if scancode > 0 { self.held.insert(sc_key); }
             }
             _ => {}
         };
@@ -367,7 +372,7 @@ mod tests {
         let mut engine = HotkeyEngine::new();
         engine.bindings.push(make_binding(vec![290], gui_action())); // F1
 
-        let (_, actions) = engine.process_key(290, GLFW_PRESS, 0);
+        let (_, actions) = engine.process_key(290, 0, GLFW_PRESS, 0);
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0], HotkeyAction::ToggleGui);
     }
@@ -377,10 +382,10 @@ mod tests {
         let mut engine = HotkeyEngine::new();
         engine.bindings.push(make_binding(vec![341, 290], gui_action())); // Ctrl+F1
 
-        let (_, actions) = engine.process_key(341, GLFW_PRESS, 0);
+        let (_, actions) = engine.process_key(341, 0, GLFW_PRESS, 0);
         assert!(actions.is_empty());
 
-        let (_, actions) = engine.process_key(290, GLFW_PRESS, 0);
+        let (_, actions) = engine.process_key(290, 0, GLFW_PRESS, 0);
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0], HotkeyAction::ToggleGui);
     }
@@ -397,10 +402,10 @@ mod tests {
             conditions: HotkeyConditions::default(),
         });
 
-        let (_, actions) = engine.process_key(290, GLFW_PRESS, 0);
+        let (_, actions) = engine.process_key(290, 0, GLFW_PRESS, 0);
         assert!(actions.is_empty());
 
-        let (_, actions) = engine.process_key(290, GLFW_RELEASE, 0);
+        let (_, actions) = engine.process_key(290, 0, GLFW_RELEASE, 0);
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0], HotkeyAction::ToggleGui);
     }
@@ -417,11 +422,11 @@ mod tests {
             conditions: HotkeyConditions::default(),
         });
 
-        let (_, actions) = engine.process_key(290, GLFW_PRESS, 0);
+        let (_, actions) = engine.process_key(290, 0, GLFW_PRESS, 0);
         assert_eq!(actions.len(), 1);
 
-        engine.process_key(290, GLFW_RELEASE, 0);
-        let (_, actions) = engine.process_key(290, GLFW_PRESS, 0);
+        engine.process_key(290, 0, GLFW_RELEASE, 0);
+        let (_, actions) = engine.process_key(290, 0, GLFW_PRESS, 0);
         assert!(actions.is_empty());
     }
 
@@ -437,7 +442,7 @@ mod tests {
             conditions: HotkeyConditions::default(),
         });
 
-        let (consumed, actions) = engine.process_key(290, GLFW_PRESS, 0);
+        let (consumed, actions) = engine.process_key(290, 0, GLFW_PRESS, 0);
         assert!(consumed);
         assert_eq!(actions.len(), 1);
     }
@@ -474,10 +479,10 @@ mod tests {
     fn key_release_clears_pressed_state() {
         let mut engine = HotkeyEngine::new();
 
-        engine.process_key(290, GLFW_PRESS, 0);
+        engine.process_key(290, 0, GLFW_PRESS, 0);
         assert!(engine.held.contains(&290));
 
-        engine.process_key(290, GLFW_RELEASE, 0);
+        engine.process_key(290, 0, GLFW_RELEASE, 0);
         assert!(!engine.held.contains(&290));
     }
 
@@ -489,7 +494,7 @@ mod tests {
             .push(make_binding(vec![290], switch_action("wall", "game")));
         engine.bindings.push(make_binding(vec![290], gui_action()));
 
-        let (_, actions) = engine.process_key(290, GLFW_PRESS, 0);
+        let (_, actions) = engine.process_key(290, 0, GLFW_PRESS, 0);
         assert_eq!(actions.len(), 2);
     }
 
@@ -498,7 +503,7 @@ mod tests {
         let mut engine = HotkeyEngine::new();
         engine.bindings.push(make_binding(vec![290], gui_action())); // F1
 
-        let (consumed, actions) = engine.process_key(291, GLFW_PRESS, 0); // F2
+        let (consumed, actions) = engine.process_key(291, 0, GLFW_PRESS, 0); // F2
         assert!(!consumed);
         assert!(actions.is_empty());
     }
@@ -516,7 +521,7 @@ mod tests {
             },
         ));
 
-        let (_, actions) = engine.process_key(340, GLFW_PRESS, 0);
+        let (_, actions) = engine.process_key(340, 0, GLFW_PRESS, 0);
         assert_eq!(actions.len(), 1);
         assert_eq!(
             actions[0],
@@ -541,13 +546,13 @@ mod tests {
             conditions: HotkeyConditions::default(),
         });
 
-        let (_, actions) = engine.process_key(341, GLFW_PRESS, 0);
+        let (_, actions) = engine.process_key(341, 0, GLFW_PRESS, 0);
         assert!(actions.is_empty());
 
-        let (_, actions) = engine.process_key(290, GLFW_PRESS, 0); // release-trigger, doesn't fire yet
+        let (_, actions) = engine.process_key(290, 0, GLFW_PRESS, 0); // release-trigger, doesn't fire yet
         assert!(actions.is_empty());
 
-        let (_, actions) = engine.process_key(290, GLFW_RELEASE, 0); // now it fires
+        let (_, actions) = engine.process_key(290, 0, GLFW_RELEASE, 0); // now it fires
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0], HotkeyAction::ToggleGui);
     }
@@ -556,8 +561,8 @@ mod tests {
     fn clear_pressed_resets_state() {
         let mut engine = HotkeyEngine::new();
 
-        engine.process_key(290, GLFW_PRESS, 0);
-        engine.process_key(291, GLFW_PRESS, 0);
+        engine.process_key(290, 0, GLFW_PRESS, 0);
+        engine.process_key(291, 0, GLFW_PRESS, 0);
         assert_eq!(engine.held.len(), 2);
 
         engine.clear_pressed();
@@ -571,13 +576,13 @@ mod tests {
         engine.bindings.push(make_binding(vec![290], gui_action()));
 
         // hold W with REPEAT flooding
-        engine.process_key(87, GLFW_PRESS, 0);
-        engine.process_key(87, GLFW_REPEAT, 0);
-        engine.process_key(87, GLFW_REPEAT, 0);
-        engine.process_key(87, GLFW_REPEAT, 0);
+        engine.process_key(87, 0, GLFW_PRESS, 0);
+        engine.process_key(87, 0, GLFW_REPEAT, 0);
+        engine.process_key(87, 0, GLFW_REPEAT, 0);
+        engine.process_key(87, 0, GLFW_REPEAT, 0);
 
         // F1 while W held -- must fire
-        let (_, actions) = engine.process_key(290, GLFW_PRESS, 0);
+        let (_, actions) = engine.process_key(290, 0, GLFW_PRESS, 0);
         assert_eq!(actions.len(), 1, "F1 must fire while W is held");
         assert_eq!(actions[0], HotkeyAction::ToggleGui);
     }
@@ -594,13 +599,13 @@ mod tests {
             conditions: HotkeyConditions::default(),
         });
 
-        let (_, actions) = engine.process_key(290, GLFW_PRESS, 0);
+        let (_, actions) = engine.process_key(290, 0, GLFW_PRESS, 0);
         assert_eq!(actions.len(), 1);
 
         // REPEAT must NOT re-fire
-        let (_, actions) = engine.process_key(290, GLFW_REPEAT, 0);
+        let (_, actions) = engine.process_key(290, 0, GLFW_REPEAT, 0);
         assert!(actions.is_empty(), "REPEAT must not re-trigger the hotkey");
-        let (_, actions) = engine.process_key(290, GLFW_REPEAT, 0);
+        let (_, actions) = engine.process_key(290, 0, GLFW_REPEAT, 0);
         assert!(actions.is_empty());
     }
 
@@ -616,18 +621,18 @@ mod tests {
             conditions: HotkeyConditions::default(),
         });
 
-        engine.process_key(87, GLFW_PRESS, 0);   // W down
-        engine.process_key(290, GLFW_PRESS, 0);  // F1 down -> fires
-        engine.process_key(290, GLFW_RELEASE, 0); // F1 up
+        engine.process_key(87, 0, GLFW_PRESS, 0);   // W down
+        engine.process_key(290, 0, GLFW_PRESS, 0);  // F1 down -> fires
+        engine.process_key(290, 0, GLFW_RELEASE, 0); // F1 up
 
         // W REPEATs must not fire F1
-        let (_, actions) = engine.process_key(87, GLFW_REPEAT, 0);
+        let (_, actions) = engine.process_key(87, 0, GLFW_REPEAT, 0);
         assert!(actions.is_empty(), "W REPEAT after F1 release must not fire F1");
-        let (_, actions) = engine.process_key(87, GLFW_REPEAT, 0);
+        let (_, actions) = engine.process_key(87, 0, GLFW_REPEAT, 0);
         assert!(actions.is_empty());
 
         // F1 again should fire
-        let (_, actions) = engine.process_key(290, GLFW_PRESS, 0);
+        let (_, actions) = engine.process_key(290, 0, GLFW_PRESS, 0);
         assert_eq!(actions.len(), 1, "F1 must fire again after release");
     }
 
@@ -637,23 +642,23 @@ mod tests {
         engine.bindings.push(make_binding(vec![342, 290], gui_action())); // Alt+F1
 
         // hold Alt
-        let (_, actions) = engine.process_key(342, GLFW_PRESS, 0);
+        let (_, actions) = engine.process_key(342, 0, GLFW_PRESS, 0);
         assert!(actions.is_empty());
 
         // first F1 press
-        let (_, actions) = engine.process_key(290, GLFW_PRESS, 0);
+        let (_, actions) = engine.process_key(290, 0, GLFW_PRESS, 0);
         assert_eq!(actions.len(), 1, "Alt+F1 must fire on first press");
 
         // release F1, alt still held
-        engine.process_key(290, GLFW_RELEASE, 0);
+        engine.process_key(290, 0, GLFW_RELEASE, 0);
 
         // second F1 press - should fire again without re-pressing alt
-        let (_, actions) = engine.process_key(290, GLFW_PRESS, 0);
+        let (_, actions) = engine.process_key(290, 0, GLFW_PRESS, 0);
         assert_eq!(actions.len(), 1, "Alt+F1 must fire again while Alt held");
 
         // third time for good measure
-        engine.process_key(290, GLFW_RELEASE, 0);
-        let (_, actions) = engine.process_key(290, GLFW_PRESS, 0);
+        engine.process_key(290, 0, GLFW_RELEASE, 0);
+        let (_, actions) = engine.process_key(290, 0, GLFW_PRESS, 0);
         assert_eq!(actions.len(), 1, "Alt+F1 must fire on third press too");
     }
 }
