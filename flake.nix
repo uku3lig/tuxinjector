@@ -11,7 +11,7 @@
   };
 
   outputs = { self, nixpkgs, rust-overlay, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
       let
         overlays = [ (import rust-overlay) ];
         pkgs = import nixpkgs { inherit system overlays; };
@@ -20,7 +20,6 @@
           extensions = [ "rust-src" "rust-analyzer" "clippy" ];
         };
 
-        # Native build dependencies
         buildInputs = with pkgs; [
           vulkan-headers
           vulkan-loader
@@ -88,24 +87,6 @@
             license = licenses.mit;
             platforms = platforms.linux;
           };
-        };
-
-        # MkDocs documentation
-        devShells.docs = pkgs.mkShell {
-          packages = with pkgs; [
-            python3
-          clang
-          llvmPackages.libclang
-            python3Packages.mkdocs
-            python3Packages.mkdocs-material
-            python3Packages.pymdown-extensions
-          ];
-
-          shellHook = ''
-            echo "docs shell ready"
-            echo "  mkdocs serve     # preview docs at localhost:8000"
-            echo "  mkdocs build     # build static site"
-          '';
         };
       }
     );
