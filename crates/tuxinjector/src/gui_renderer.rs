@@ -22,6 +22,8 @@ pub struct GuiInput {
     pub pointer_pos: Option<(f32, f32)>,
     pub pointer_button_pressed: bool,
     pub pointer_button_released: bool,
+    pub rbutton_pressed: bool,
+    pub rbutton_released: bool,
     // GLFW mod bitmask so Ctrl+Click works on sliders
     pub pointer_button_mods: i32,
     pub scroll_delta: (f32, f32),
@@ -41,6 +43,7 @@ pub struct GuiRenderer {
     last_render: Instant,
     visible: bool,
     mouse_held: bool,
+    rmouse_held: bool,
     last_mods: i32,
     toasts: Vec<ActiveToast>,
     cached_perf: Option<crate::perf_stats::PerfSnapshot>,
@@ -93,6 +96,7 @@ impl GuiRenderer {
             last_render: now,
             visible: false,
             mouse_held: false,
+            rmouse_held: false,
             last_mods: 0,
             toasts: Vec::new(),
             cached_perf: None,
@@ -247,6 +251,10 @@ impl GuiRenderer {
             if input.pointer_button_pressed { self.mouse_held = true; }
             if input.pointer_button_released { self.mouse_held = false; }
             io.add_mouse_button_event(imgui::MouseButton::Left, self.mouse_held);
+
+            if input.rbutton_pressed { self.rmouse_held = true; }
+            if input.rbutton_released { self.rmouse_held = false; }
+            io.add_mouse_button_event(imgui::MouseButton::Right, self.rmouse_held);
 
             if input.scroll_delta.0 != 0.0 || input.scroll_delta.1 != 0.0 {
                 io.add_mouse_wheel_event([input.scroll_delta.0, input.scroll_delta.1]);

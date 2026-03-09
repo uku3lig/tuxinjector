@@ -666,6 +666,8 @@ impl OverlayState {
                 pointer_pos: Some((mx as f32, my as f32)),
                 pointer_button_pressed: tuxinjector_input::take_gui_button_press(),
                 pointer_button_released: tuxinjector_input::take_gui_button_release(),
+                rbutton_pressed: tuxinjector_input::take_gui_rbutton_press(),
+                rbutton_released: tuxinjector_input::take_gui_rbutton_release(),
                 pointer_button_mods: tuxinjector_input::take_gui_button_mods(),
                 scroll_delta: scroll,
                 keys,

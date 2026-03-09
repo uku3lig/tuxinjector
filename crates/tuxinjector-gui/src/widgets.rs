@@ -1,14 +1,35 @@
 // Shared widget helpers used across the settings tabs
 
+use std::cell::RefCell;
 use std::path::Path;
 
 use imgui::{SliderFlags, StyleColor, Ui};
+
+// Tracks which slider is currently in inline text-edit mode (right-click to type).
+thread_local! {
+    static EDITING_SLIDER: RefCell<Option<String>> = RefCell::new(None);
+}
 
 // -- Slider wrappers --
 // Both support arrow-key stepping when hovered and right-click to type a value.
 
 pub fn slider_int(ui: &Ui, label: &str, val: &mut i32, min: i32, max: i32, fmt: &str) -> bool {
-    let popup = format!("##edit_{label}");
+    let editing = EDITING_SLIDER.with(|e| e.borrow().as_deref() == Some(label));
+
+    if editing {
+        // inline text input - same look as native Ctrl+Click
+        ui.set_keyboard_focus_here();
+        let mut changed = imgui::Drag::new(label)
+            .range(min, max)
+            .speed(1.0)
+            .display_format(fmt)
+            .build(ui, val);
+        if ui.is_item_deactivated() {
+            EDITING_SLIDER.with(|e| *e.borrow_mut() = None);
+            changed = true;
+        }
+        return changed;
+    }
 
     let mut changed = ui
         .slider_config(label, min, max)
@@ -27,24 +48,9 @@ pub fn slider_int(ui: &Ui, label: &str, val: &mut i32, min: i32, max: i32, fmt: 
             changed = true;
         }
         if ui.is_mouse_clicked(imgui::MouseButton::Right) {
-            ui.open_popup(&popup);
+            EDITING_SLIDER.with(|e| *e.borrow_mut() = Some(label.to_string()));
         }
         ui.tooltip_text("Arrow keys to step, Shift for x10, Right-click to type");
-    }
-
-    if let Some(_p) = ui.begin_popup(&popup) {
-        ui.set_next_item_width(120.0);
-        if imgui::Drag::new(format!("##drag_{label}"))
-            .range(min, max)
-            .speed(1.0)
-            .display_format(fmt)
-            .build(ui, val)
-        {
-            changed = true;
-        }
-        if ui.is_item_deactivated_after_edit() {
-            ui.close_current_popup();
-        }
     }
 
     changed
@@ -52,7 +58,21 @@ pub fn slider_int(ui: &Ui, label: &str, val: &mut i32, min: i32, max: i32, fmt: 
 
 pub fn slider_float(ui: &Ui, label: &str, val: &mut f32, min: f32, max: f32, fmt: &str) -> bool {
     let range = max - min;
-    let popup = format!("##edit_{label}");
+    let editing = EDITING_SLIDER.with(|e| e.borrow().as_deref() == Some(label));
+
+    if editing {
+        ui.set_keyboard_focus_here();
+        let mut changed = imgui::Drag::new(label)
+            .range(min, max)
+            .speed(range * 0.001)
+            .display_format(fmt)
+            .build(ui, val);
+        if ui.is_item_deactivated() {
+            EDITING_SLIDER.with(|e| *e.borrow_mut() = None);
+            changed = true;
+        }
+        return changed;
+    }
 
     let mut changed = ui
         .slider_config(label, min, max)
@@ -71,24 +91,9 @@ pub fn slider_float(ui: &Ui, label: &str, val: &mut f32, min: f32, max: f32, fmt
             changed = true;
         }
         if ui.is_mouse_clicked(imgui::MouseButton::Right) {
-            ui.open_popup(&popup);
+            EDITING_SLIDER.with(|e| *e.borrow_mut() = Some(label.to_string()));
         }
         ui.tooltip_text("Arrow keys to step, Shift for x10, Right-click to type");
-    }
-
-    if let Some(_p) = ui.begin_popup(&popup) {
-        ui.set_next_item_width(120.0);
-        if imgui::Drag::new(format!("##drag_{label}"))
-            .range(min, max)
-            .speed(range * 0.001)
-            .display_format(fmt)
-            .build(ui, val)
-        {
-            changed = true;
-        }
-        if ui.is_item_deactivated_after_edit() {
-            ui.close_current_popup();
-        }
     }
 
     changed

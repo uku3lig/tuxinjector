@@ -299,6 +299,8 @@ static GUI_VISIBLE: AtomicBool = AtomicBool::new(false);
 static GUI_WANTS_KB: AtomicBool = AtomicBool::new(false);
 static GUI_BTN_PRESSED: AtomicBool = AtomicBool::new(false);
 static GUI_BTN_RELEASED: AtomicBool = AtomicBool::new(false);
+static GUI_RBTN_PRESSED: AtomicBool = AtomicBool::new(false);
+static GUI_RBTN_RELEASED: AtomicBool = AtomicBool::new(false);
 static GUI_BTN_MODS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 static GUI_SCROLL: Mutex<(f32, f32)> = Mutex::new((0.0, 0.0));
 
@@ -327,6 +329,14 @@ pub fn push_gui_button_release() {
     GUI_BTN_RELEASED.store(true, Ordering::Relaxed);
 }
 
+pub fn push_gui_rbutton_press() {
+    GUI_RBTN_PRESSED.store(true, Ordering::Relaxed);
+}
+
+pub fn push_gui_rbutton_release() {
+    GUI_RBTN_RELEASED.store(true, Ordering::Relaxed);
+}
+
 pub fn push_gui_button_mods(mods: i32) {
     GUI_BTN_MODS.store(mods, Ordering::Relaxed);
 }
@@ -341,6 +351,14 @@ pub fn take_gui_button_press() -> bool {
 
 pub fn take_gui_button_release() -> bool {
     GUI_BTN_RELEASED.swap(false, Ordering::Relaxed)
+}
+
+pub fn take_gui_rbutton_press() -> bool {
+    GUI_RBTN_PRESSED.swap(false, Ordering::Relaxed)
+}
+
+pub fn take_gui_rbutton_release() -> bool {
+    GUI_RBTN_RELEASED.swap(false, Ordering::Relaxed)
 }
 
 // --- key capture mode (for the hotkey picker in settings) ---

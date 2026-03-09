@@ -13,6 +13,8 @@ pub use callbacks::{
     set_gui_wants_keyboard, gui_wants_keyboard,
     push_gui_button_press, push_gui_button_release,
     take_gui_button_press, take_gui_button_release,
+    push_gui_rbutton_press, push_gui_rbutton_release,
+    take_gui_rbutton_press, take_gui_rbutton_release,
     push_gui_button_mods, take_gui_button_mods,
     push_gui_scroll, take_gui_scroll,
     push_gui_key, take_gui_keys, push_gui_char, take_gui_text,

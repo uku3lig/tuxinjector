@@ -242,6 +242,9 @@ impl InputHandler for TuxinjectorInputHandler {
                 if action == 1 { tuxinjector_input::push_gui_button_press(); }
                 else if action == 0 { tuxinjector_input::push_gui_button_release(); }
                 tuxinjector_input::push_gui_button_mods(mods);
+            } else if button == 1 {
+                if action == 1 { tuxinjector_input::push_gui_rbutton_press(); }
+                else if action == 0 { tuxinjector_input::push_gui_rbutton_release(); }
             }
             return (true, encoded);
         }
