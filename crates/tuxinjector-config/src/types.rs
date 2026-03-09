@@ -1586,7 +1586,7 @@ impl Default for OverlaysConfig {
             images: vec![
                 ImageConfig {
                     name: "measuringOverlay".into(),
-                    path: "~/.config/waywall/images/measuring_overlay.png".into(),
+                    path: "~/.local/share/tuxinjector/images/overlay.png".into(),
                     x: 94, y: 470,
                     output_width: 900, output_height: 500,
                     ..ImageConfig::default()
