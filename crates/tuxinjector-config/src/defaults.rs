@@ -86,7 +86,7 @@ pub fn eyezoom_window_height() -> i32 { 16384 }
 
 pub fn eyezoom_auto_font_size() -> bool { true }
 pub fn eyezoom_text_font_size() -> i32 { 42 }
-pub fn eyezoom_rect_height() -> i32 { 50 }
+pub fn eyezoom_rect_height() -> i32 { 40 }
 pub fn eyezoom_link_rect_to_font() -> bool { false }
 
 // light pink
@@ -108,7 +108,7 @@ pub fn eyezoom_highlight_color() -> Color {
 }
 
 pub fn eyezoom_highlight_interval() -> i32 { 10 }
-pub fn eyezoom_number_style() -> String { String::from("stacked") }
+pub fn eyezoom_number_style() -> String { String::from("slackow") }
 
 pub fn appearance_theme() -> String { "Purple".into() }
 pub fn custom_colors_empty() -> HashMap<String, Color> { HashMap::new() }
@@ -117,23 +117,8 @@ pub fn gui_scale() -> f32 { 0.8 }
 pub fn config_version() -> i32 { 1 }
 pub fn default_mode() -> String { "Fullscreen".into() }
 
-// Try to find a sans-serif font via fontconfig. Falls back to empty string
-// if fc-match isn't around (shouldn't happen on any real linux install
-// but stranger things have happened).
-pub fn font_path() -> String {
-    if let Ok(out) = std::process::Command::new("fc-match")
-        .args(["sans", "--format=%{file}"])
-        .output()
-    {
-        if out.status.success() {
-            let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !p.is_empty() && std::path::Path::new(&p).exists() {
-                return p;
-            }
-        }
-    }
-    String::new()
-}
+// Empty string = imgui's built-in ProggyClean font.
+pub fn font_path() -> String { String::new() }
 
 pub fn fps_limit_sleep_threshold() -> i32 { 1000 }
 pub fn mouse_sensitivity() -> f32 { 1.0 }
